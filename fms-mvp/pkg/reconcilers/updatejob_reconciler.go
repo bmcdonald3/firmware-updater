@@ -45,7 +45,7 @@ func (r *UpdateJobReconciler) reconcileUpdateJob(ctx context.Context, res *v1.Up
 	if res.Spec.UpdateStrategy == "Pull" {
 		// PULL STRATEGY: Instruct the BMC to download the file from the global background server.
 		targetURL := fmt.Sprintf("https://%s/redfish/v1/UpdateService/Actions/UpdateService.SimpleUpdate", res.Spec.BMCAddress)
-		imageURI := fmt.Sprintf("http://172.23.0.1:8080/%s", res.Spec.FirmwareFilename)
+		imageURI := fmt.Sprintf("http://127.0.0.1:8090/%s", res.Spec.FirmwareFilename)
 
 		payload := map[string]interface{}{
 			"ImageURI": imageURI,
@@ -73,7 +73,7 @@ func (r *UpdateJobReconciler) reconcileUpdateJob(ctx context.Context, res *v1.Up
 	} else if res.Spec.UpdateStrategy == "Push" {
 		// PUSH STRATEGY: Read the local binary and stream it directly to the BMC.
 		targetURL := fmt.Sprintf("https://%s/redfish/v1/UpdateService/MultipartHttpPushUri", res.Spec.BMCAddress)
-		filePath := filepath.Join("/var/www/firmware", res.Spec.FirmwareFilename)
+		filePath := filepath.Join("./firmware_payloads", res.Spec.FirmwareFilename)
 
 		file, err := os.Open(filePath)
 		if err != nil {
