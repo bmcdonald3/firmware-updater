@@ -177,9 +177,9 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// Start the global background Firmware Hosting Server
 	go func() {
 		firmwareDir := http.Dir("./firmware_payloads")
-		logger.Info("Starting background firmware HTTP server on :8080")
+		log.Println("Starting background firmware HTTP server on :8080")
 		if err := http.ListenAndServe(":8080", http.FileServer(firmwareDir)); err != nil {
-			logger.Error("Background firmware server failed", "error", err)
+			log.Println("Background firmware server failed", "error", err)
 		}
 	}()
 
