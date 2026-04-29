@@ -48,15 +48,18 @@ EOF
 python3 mock_bmc.py &
 MOCK_PID=$!
 
+echo "Building Fabrica server binary..."
+go build -o fms_test_server ./cmd/server
+
 echo "Starting Fabrica server..."
-go run ./cmd/server serve --port=8085 --database-url="file:data.db?cache=shared&_fk=1" > fabrica.log 2>&1 &
+./fms_test_server serve --port=8085 --database-url="file:data.db?cache=shared&_fk=1" > fabrica.log 2>&1 &
 FABRICA_PID=$!
 
 # Cleanup function to kill background processes on exit
 cleanup() {
     echo "Cleaning up background processes..."
     kill $FABRICA_PID $MOCK_PID 2>/dev/null
-    rm -f cert.pem key.pem mock_bmc.py ./firmware_payloads/test-firmware.bin response.json
+    rm -f cert.pem key.pem mock_bmc.py ./firmware_payloads/test-firmware.bin response.json fms_test_server
     rm -f pkg/reconcilers/*.bak
 }
 trap cleanup EXIT
@@ -124,8 +127,11 @@ while [ "$ATTEMPT" -le "$MAX_RETRIES" ]; do
     
     # Fetch the current state of the resource
     STATUS_RESPONSE=$(curl -s http://localhost:8085/updatejobs/"$RESOURCE_UID")
-    PHASE=$(echo "$STATUS_RESPONSE" | jq -r '.status.phase // "Pending"')
-    MESSAGE=$(echo "$STATUS_RESPONSE" | jq -r '.status.message // "No message yet"')
+    
+    # Parse out the fields, defaulting to null/Pending if missing
+    # Parse out the fields, handling potential capitalization differences
+    PHASE=$(echo "$STATUS_RESPONSE" | jq -r '.status.phase // .status.Phase // "Pending"')
+    MESSAGE=$(echo "$STATUS_RESPONSE" | jq -r '.status.message // .status.Message // "No message yet"')
     
     echo "Current Phase: $PHASE"
     
@@ -141,6 +147,10 @@ done
 
 if [ "$PHASE" != "Complete" ] && [ "$PHASE" != "Error" ]; then
     echo "Timeout waiting for terminal state. Current phase: $PHASE"
+    echo "--- RAW RESOURCE JSON ---"
+    echo "$STATUS_RESPONSE" | jq .
+    echo "--- FABRICA SERVER LOGS ---"
+    cat fabrica.log
     exit 1
 fi
 
