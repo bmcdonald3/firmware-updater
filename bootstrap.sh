@@ -48,7 +48,7 @@ type UpdateJobSpec struct {
 
 // UpdateJobStatus defines the observed state of the firmware update managed by the reconciler.
 type UpdateJobStatus struct {
-	Phase          string     `json:"phase" validate:"oneof=Pending Provisioning Complete Error"`
+	Phase          string     `json:"phase,omitempty`
 	Message        string     `json:"message,omitempty"`
 	CompletionTime *time.Time `json:"completionTime,omitempty"`
 }
