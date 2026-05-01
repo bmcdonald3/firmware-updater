@@ -3,3 +3,6 @@ groups:
       storageVersion: v1
       versions:
         - v1
+      resources:
+        - FirmwareImage
+        - FirmwareUpdateJob
