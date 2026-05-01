@@ -1,3 +1,0 @@
-go: cannot find main module, but found .git/config in /Users/benmcdonald/firmware-updater
-	to create a module there, run:
-	go mod init
