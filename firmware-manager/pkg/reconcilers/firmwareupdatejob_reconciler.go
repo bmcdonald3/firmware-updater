@@ -57,20 +57,29 @@ func (r *FirmwareUpdateJobReconciler) reconcileFirmwareUpdateJob(ctx context.Con
 		return nil
 	}
 
-	// Retrieve the FirmwareImage resource
-	firmwareImageIface, err := r.Client.Get(ctx, "FirmwareImage", res.Spec.ImageName)
+	// Retrieve the FirmwareImage resource by listing all and finding by name
+	firmwareImagesIface, err := r.Client.List(ctx, "FirmwareImage")
 	if err != nil {
 		res.Status.Status = "Failed"
-		res.Status.Error = fmt.Sprintf("failed to retrieve FirmwareImage %s: %v", res.Spec.ImageName, err)
+		res.Status.Error = fmt.Sprintf("failed to list FirmwareImages: %v", err)
 		r.Logger.Errorf("FirmwareUpdateJob %s: %s", res.Metadata.Name, res.Status.Error)
 		r.Client.Update(ctx, res)
 		return nil
 	}
 
-	firmwareImage, ok := firmwareImageIface.(*v1.FirmwareImage)
-	if !ok {
+	// Find the matching FirmwareImage by name
+	var firmwareImage *v1.FirmwareImage
+	for _, img := range firmwareImagesIface {
+		fi, ok := img.(*v1.FirmwareImage)
+		if ok && fi.Metadata.Name == res.Spec.ImageName {
+			firmwareImage = fi
+			break
+		}
+	}
+
+	if firmwareImage == nil {
 		res.Status.Status = "Failed"
-		res.Status.Error = fmt.Sprintf("invalid FirmwareImage type returned from storage")
+		res.Status.Error = fmt.Sprintf("FirmwareImage %s not found", res.Spec.ImageName)
 		r.Logger.Errorf("FirmwareUpdateJob %s: %s", res.Metadata.Name, res.Status.Error)
 		r.Client.Update(ctx, res)
 		return nil
