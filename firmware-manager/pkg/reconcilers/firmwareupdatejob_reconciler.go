@@ -7,7 +7,14 @@
 package reconcilers
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"time"
 
 	"github.com/user/firmware-manager/apis/hardware.fabrica.dev/v1"
 )
@@ -45,35 +52,122 @@ import (
 // Returns:
 //   - error: If reconciliation failed (will trigger retry with backoff)
 func (r *FirmwareUpdateJobReconciler) reconcileFirmwareUpdateJob(ctx context.Context, res *v1.FirmwareUpdateJob) error {
-	// TODO: Implement FirmwareUpdateJob-specific reconciliation logic
-	//
-	// Example:
-	//
-	//   // 1. Read desired state from Spec
-	//   desiredAddress := res.Spec.Address
-	//
-	//   // 2. Observe actual state (e.g., connect to hardware)
-	//   actualState, err := r.observeActualState(ctx, res)
-	//   if err != nil {
-	//       return fmt.Errorf("failed to observe state: %w", err)
-	//   }
-	//
-	//   // 3. Update Status with observed state
-	//   res.Status.Connected = actualState.Connected
-	//   res.Status.Version = actualState.Version
-	//   res.Status.LastSeen = time.Now().Format(time.RFC3339)
-	//
-	//   // 4. Emit events for significant changes
-	//   if !wasConnected && res.Status.Connected {
-	//       eventType := "io.openchami.inventory.firmwareupdatejobs.connected"
-	//       if err := r.EmitEvent(ctx, eventType, res); err != nil {
-	//           r.Logger.Warnf("Failed to emit event: %v", err)
-	//       }
-	//   }
-	//
-	//   return nil
+	// Skip if already in progress or completed
+	if res.Status.Status == "InProgress" || res.Status.Status == "Completed" || res.Status.Status == "Failed" {
+		return nil
+	}
 
-	r.Logger.Infof("FirmwareUpdateJob reconciliation not yet implemented for %s", res.GetUID())
+	// Retrieve the FirmwareImage resource
+	firmwareImageIface, err := r.Client.Get(ctx, "FirmwareImage", res.Spec.ImageName)
+	if err != nil {
+		res.Status.Status = "Failed"
+		res.Status.Error = fmt.Sprintf("failed to retrieve FirmwareImage %s: %v", res.Spec.ImageName, err)
+		r.Logger.Errorf("FirmwareUpdateJob %s: %s", res.Metadata.Name, res.Status.Error)
+		r.Client.Update(ctx, res)
+		return nil
+	}
+
+	firmwareImage, ok := firmwareImageIface.(*v1.FirmwareImage)
+	if !ok {
+		res.Status.Status = "Failed"
+		res.Status.Error = fmt.Sprintf("invalid FirmwareImage type returned from storage")
+		r.Logger.Errorf("FirmwareUpdateJob %s: %s", res.Metadata.Name, res.Status.Error)
+		r.Client.Update(ctx, res)
+		return nil
+	}
+
+	// Construct the image URI
+	imageURI := fmt.Sprintf("http://%s:8090/firmware-files/%s", res.Spec.ServerAddress, firmwareImage.Spec.Filename)
+	r.Logger.Infof("FirmwareUpdateJob %s: constructed image URI: %s", res.Metadata.Name, imageURI)
+
+	// Prepare the Redfish update payload
+	updatePayload := map[string]interface{}{
+		"ImageURI": imageURI,
+		"Targets":  res.Spec.Targets,
+	}
+
+	payloadBytes, err := json.Marshal(updatePayload)
+	if err != nil {
+		res.Status.Status = "Failed"
+		res.Status.Error = fmt.Sprintf("failed to marshal update payload: %v", err)
+		r.Logger.Errorf("FirmwareUpdateJob %s: %s", res.Metadata.Name, res.Status.Error)
+		r.Client.Update(ctx, res)
+		return nil
+	}
+
+	// Create HTTP client with TLS verification disabled
+	tlsConfig := &tls.Config{InsecureSkipVerify: true}
+	httpClient := &http.Client{
+		Transport: &http.Transport{TLSClientConfig: tlsConfig},
+		Timeout:   30 * time.Second,
+	}
+
+	// Construct the Redfish endpoint URL
+	redfishURL := fmt.Sprintf("https://%s/redfish/v1/UpdateService/Actions/UpdateService.SimpleUpdate", res.Spec.TargetAddress)
+	r.Logger.Infof("FirmwareUpdateJob %s: posting to %s", res.Metadata.Name, redfishURL)
+
+	// Create HTTP request
+	req, err := http.NewRequestWithContext(ctx, "POST", redfishURL, bytes.NewReader(payloadBytes))
+	if err != nil {
+		res.Status.Status = "Failed"
+		res.Status.Error = fmt.Sprintf("failed to create request: %v", err)
+		r.Logger.Errorf("FirmwareUpdateJob %s: %s", res.Metadata.Name, res.Status.Error)
+		r.Client.Update(ctx, res)
+		return nil
+	}
+
+	// Set headers
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth(res.Spec.Username, res.Spec.Password)
+
+	// Execute request
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		res.Status.Status = "Failed"
+		res.Status.Error = fmt.Sprintf("failed to execute Redfish request: %v", err)
+		r.Logger.Errorf("FirmwareUpdateJob %s: %s", res.Metadata.Name, res.Status.Error)
+		r.Client.Update(ctx, res)
+		return nil
+	}
+	defer resp.Body.Close()
+
+	// Read response body
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		res.Status.Status = "Failed"
+		res.Status.Error = fmt.Sprintf("failed to read response body: %v", err)
+		r.Logger.Errorf("FirmwareUpdateJob %s: %s", res.Metadata.Name, res.Status.Error)
+		r.Client.Update(ctx, res)
+		return nil
+	}
+
+	// Check response status
+	if resp.StatusCode == 200 || resp.StatusCode == 202 {
+		res.Status.Status = "InProgress"
+		res.Status.StartTime = time.Now().Format(time.RFC3339)
+		res.Status.Error = ""
+
+		// Try to extract Task ID if provided in response
+		var respData map[string]interface{}
+		if err := json.Unmarshal(respBody, &respData); err == nil {
+			if taskURI, ok := respData["@odata.id"].(string); ok {
+				res.Status.TaskID = taskURI
+			}
+		}
+
+		r.Logger.Infof("FirmwareUpdateJob %s: update job accepted, status: %d", res.Metadata.Name, resp.StatusCode)
+	} else {
+		res.Status.Status = "Failed"
+		res.Status.Error = fmt.Sprintf("Redfish server returned status %d: %s", resp.StatusCode, string(respBody))
+		res.Status.EndTime = time.Now().Format(time.RFC3339)
+		r.Logger.Errorf("FirmwareUpdateJob %s: %s", res.Metadata.Name, res.Status.Error)
+	}
+
+	// Update the resource status
+	if err := r.Client.Update(ctx, res); err != nil {
+		r.Logger.Errorf("FirmwareUpdateJob %s: failed to update status: %v", res.Metadata.Name, err)
+		return err
+	}
 
 	return nil
 }

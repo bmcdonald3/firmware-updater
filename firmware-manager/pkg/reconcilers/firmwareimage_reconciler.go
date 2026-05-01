@@ -8,6 +8,8 @@ package reconcilers
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 
 	"github.com/user/firmware-manager/apis/hardware.fabrica.dev/v1"
 )
@@ -45,35 +47,32 @@ import (
 // Returns:
 //   - error: If reconciliation failed (will trigger retry with backoff)
 func (r *FirmwareImageReconciler) reconcileFirmwareImage(ctx context.Context, res *v1.FirmwareImage) error {
-	// TODO: Implement FirmwareImage-specific reconciliation logic
-	//
-	// Example:
-	//
-	//   // 1. Read desired state from Spec
-	//   desiredAddress := res.Spec.Address
-	//
-	//   // 2. Observe actual state (e.g., connect to hardware)
-	//   actualState, err := r.observeActualState(ctx, res)
-	//   if err != nil {
-	//       return fmt.Errorf("failed to observe state: %w", err)
-	//   }
-	//
-	//   // 3. Update Status with observed state
-	//   res.Status.Connected = actualState.Connected
-	//   res.Status.Version = actualState.Version
-	//   res.Status.LastSeen = time.Now().Format(time.RFC3339)
-	//
-	//   // 4. Emit events for significant changes
-	//   if !wasConnected && res.Status.Connected {
-	//       eventType := "io.openchami.inventory.firmwareimages.connected"
-	//       if err := r.EmitEvent(ctx, eventType, res); err != nil {
-	//           r.Logger.Warnf("Failed to emit event: %v", err)
-	//       }
-	//   }
-	//
-	//   return nil
+	// Validate firmware image file exists in firmware_payloads directory
+	firmwarePath := filepath.Join("firmware_payloads", res.Spec.Filename)
+	
+	_, err := os.Stat(firmwarePath)
+	
+	if err != nil {
+		if os.IsNotExist(err) {
+			res.Status.Verified = false
+			res.Status.Error = "firmware file not found: " + firmwarePath
+			r.Logger.Warnf("FirmwareImage %s: file not found at %s", res.Metadata.Name, firmwarePath)
+		} else {
+			res.Status.Verified = false
+			res.Status.Error = "failed to stat firmware file: " + err.Error()
+			r.Logger.Errorf("FirmwareImage %s: stat error: %v", res.Metadata.Name, err)
+		}
+	} else {
+		res.Status.Verified = true
+		res.Status.Error = ""
+		r.Logger.Infof("FirmwareImage %s: verified successfully", res.Metadata.Name)
+	}
 
-	r.Logger.Infof("FirmwareImage reconciliation not yet implemented for %s", res.GetUID())
+	// Update the resource status
+	if err := r.Client.Update(ctx, res); err != nil {
+		r.Logger.Errorf("FirmwareImage %s: failed to update status: %v", res.Metadata.Name, err)
+		return err
+	}
 
 	return nil
 }
