@@ -34,6 +34,7 @@ echo "Waiting for file validation..."
 sleep 2
 
 # 4. Trigger the Update Job on the real BMC
+# "targetAddress": "172.24.0.3",
 echo "Triggering Redfish Update Job..."
 curl -s -X POST http://127.0.0.1:$PORT/firmwareupdatejobs \
   -H "Content-Type: application/json" \
@@ -42,7 +43,7 @@ curl -s -X POST http://127.0.0.1:$PORT/firmwareupdatejobs \
     "kind": "FirmwareUpdateJob",
     "metadata": {"name": "demo-update-bmc"},
     "spec": {
-      "targetAddress": "172.24.0.3",
+      "targetAddress": "172.24.0.1:8000",
       "username": "root",
       "password": "initial0",
       "imageName": "bmc-v2",
