@@ -6,7 +6,7 @@ echo "This is a dummy BMC firmware update payload" > firmware_payloads/bmc-updat
 
 # 2. Start the service in the background on port 8090
 echo "Starting Firmware Management Service on port 8090..."
-PORT:=8090 
+PORT=8090 
 go build -o temp_demo_server ./cmd/server
 ./temp_demo_server --port=$PORT serve --database-url="file:data.db?cache=shared&_fk=1" &
 SERVER_PID=$!
