@@ -112,7 +112,7 @@ func (r *FirmwareUpdateJobReconciler) reconcileFirmwareUpdateJob(ctx context.Con
 	}
 
 	// Construct the Redfish endpoint URL
-	redfishURL := fmt.Sprintf("https://%s/redfish/v1/UpdateService/Actions/UpdateService.SimpleUpdate", res.Spec.TargetAddress)
+	redfishURL := fmt.Sprintf("http://%s/redfish/v1/UpdateService/Actions/UpdateService.SimpleUpdate", res.Spec.TargetAddress)
 	r.Logger.Infof("FirmwareUpdateJob %s: posting to %s", res.Metadata.Name, redfishURL)
 
 	// Create HTTP request
