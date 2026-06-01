@@ -7,7 +7,7 @@
 **Boundaries:** This service acts as an OCI-to-HTTP proxy and Redfish orchestrator. It does NOT automatically reboot nodes, track complex cross-component dependencies, perform in-band OS-level script updates, or host static binary files on local disk.
 
 **Fabrica Configuration (MANDATORY):**
-You must use the Fabrica framework to build this service.
+You must use the Fabrica CLI to build this service.
 
 * **Project Name:** firmware-manager
 * **API Group:** hardware.fabrica.dev
