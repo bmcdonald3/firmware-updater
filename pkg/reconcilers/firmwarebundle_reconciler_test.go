@@ -156,3 +156,26 @@ func TestReconcileFirmwareBundle(t *testing.T) {
 		})
 	}
 }
+
+func TestShouldUsePlainHTTPRegistry(t *testing.T) {
+	tests := []struct {
+		name        string
+		registryURL string
+		expect      bool
+	}{
+		{name: "localhost with port", registryURL: "localhost:5000", expect: true},
+		{name: "localhost without port", registryURL: "localhost", expect: true},
+		{name: "ipv4 loopback", registryURL: "127.0.0.1:5000", expect: true},
+		{name: "ipv6 loopback", registryURL: "[::1]:5000", expect: true},
+		{name: "remote registry", registryURL: "registry.example.org", expect: false},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldUsePlainHTTPRegistry(tt.registryURL); got != tt.expect {
+				t.Fatalf("shouldUsePlainHTTPRegistry(%q) = %v, want %v", tt.registryURL, got, tt.expect)
+			}
+		})
+	}
+}

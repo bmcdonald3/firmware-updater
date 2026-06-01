@@ -159,6 +159,7 @@ func discoverFirmwareBundle(ctx context.Context, res *v1.FirmwareBundle) (*bundl
 	if err != nil {
 		return nil, err
 	}
+	repo.PlainHTTP = shouldUsePlainHTTPRegistry(res.Spec.RegistryURL)
 
 	manifestDesc, err := repo.Resolve(ctx, strings.TrimSpace(res.Spec.TagOrDigest))
 	if err != nil {
@@ -260,4 +261,29 @@ func sleepWithContext(ctx context.Context, delay time.Duration) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+func shouldUsePlainHTTPRegistry(registryURL string) bool {
+	trimmed := strings.TrimSpace(registryURL)
+	if trimmed == "" {
+		return false
+	}
+
+	host := trimmed
+	if parsedHost, _, err := net.SplitHostPort(trimmed); err == nil {
+		host = parsedHost
+	} else if strings.Count(trimmed, ":") == 1 {
+		candidateHost, _, found := strings.Cut(trimmed, ":")
+		if found && candidateHost != "" {
+			host = candidateHost
+		}
+	}
+
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
