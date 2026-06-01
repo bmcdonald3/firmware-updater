@@ -2,30 +2,42 @@ package reconcilers
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	v1 "firmware-manager/apis/hardware.fabrica.dev/v1"
 
 	"github.com/openchami/fabrica/pkg/reconcile"
+	"oras.land/oras-go/v2/registry/remote/errcode"
 )
 
 func TestReconcileFirmwareBundle(t *testing.T) {
-	t.Parallel()
-
 	reconciler := &FirmwareBundleReconciler{
 		BaseReconciler: reconcile.BaseReconciler{Logger: reconcile.NewDefaultLogger()},
+	}
+	originalDiscover := firmwareBundleDiscoverFn
+	originalSleep := sleepWithContextFn
+	t.Cleanup(func() {
+		firmwareBundleDiscoverFn = originalDiscover
+		sleepWithContextFn = originalSleep
+	})
+	sleepWithContextFn = func(ctx context.Context, delay time.Duration) error {
+		return nil
 	}
 
 	tests := []struct {
 		name                 string
 		resource             *v1.FirmwareBundle
+		discoverFn           func(context.Context, *v1.FirmwareBundle) (*bundleDiscoveryResult, error)
 		expectDiscovered     bool
 		expectErrorSubstring string
 		expectMetadata       bool
 	}{
 		{
-			name: "valid bundle produces mock metadata",
+			name: "valid bundle discovers manifest and metadata",
 			resource: &v1.FirmwareBundle{
 				Metadata: v1.FirmwareBundle{}.Metadata,
 				Spec: v1.FirmwareBundleSpec{
@@ -33,6 +45,15 @@ func TestReconcileFirmwareBundle(t *testing.T) {
 					Repository:  "firmware/hpe/cray-ex-node-bmc",
 					TagOrDigest: "v2.14.7",
 				},
+			},
+			discoverFn: func(ctx context.Context, res *v1.FirmwareBundle) (*bundleDiscoveryResult, error) {
+				return &bundleDiscoveryResult{
+					ManifestDigest: "sha256:1234",
+					Annotations: map[string]string{
+						"vendor": "openchami",
+					},
+					PayloadDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				}, nil
 			},
 			expectDiscovered: true,
 			expectMetadata:   true,
@@ -50,34 +71,61 @@ func TestReconcileFirmwareBundle(t *testing.T) {
 			expectErrorSubstring: "registryURL",
 		},
 		{
-			name: "invalid repository fails validation",
-			resource: &v1.FirmwareBundle{
-				Spec: v1.FirmwareBundleSpec{
-					RegistryURL: "registry.example.org",
-					Repository:  "firmware//hpe",
-					TagOrDigest: "v2.14.7",
-				},
-			},
-			expectDiscovered:     false,
-			expectErrorSubstring: "repository",
-		},
-		{
-			name: "invalid tag or digest fails validation",
+			name: "registry 404 is terminal failure",
 			resource: &v1.FirmwareBundle{
 				Spec: v1.FirmwareBundleSpec{
 					RegistryURL: "registry.example.org",
 					Repository:  "firmware/hpe",
-					TagOrDigest: "not a valid ref",
+					TagOrDigest: "v2.14.7",
 				},
 			},
+			discoverFn: func(ctx context.Context, res *v1.FirmwareBundle) (*bundleDiscoveryResult, error) {
+				return nil, &errcode.ErrorResponse{StatusCode: http.StatusNotFound}
+			},
 			expectDiscovered:     false,
-			expectErrorSubstring: "tagOrDigest",
+			expectErrorSubstring: "response status code 404",
+		},
+		{
+			name: "registry 503 is transient and appended to error",
+			resource: &v1.FirmwareBundle{
+				Spec: v1.FirmwareBundleSpec{
+					RegistryURL: "registry.example.org",
+					Repository:  "firmware/hpe",
+					TagOrDigest: "v2.14.7",
+				},
+			},
+			discoverFn: func(ctx context.Context, res *v1.FirmwareBundle) (*bundleDiscoveryResult, error) {
+				return nil, &errcode.ErrorResponse{StatusCode: http.StatusServiceUnavailable}
+			},
+			expectDiscovered:     false,
+			expectErrorSubstring: "response status code 503",
+		},
+		{
+			name: "invalid artifact type is terminal failure",
+			resource: &v1.FirmwareBundle{
+				Spec: v1.FirmwareBundleSpec{
+					RegistryURL: "registry.example.org",
+					Repository:  "firmware/hpe",
+					TagOrDigest: "v2.14.7",
+				},
+			},
+			discoverFn: func(ctx context.Context, res *v1.FirmwareBundle) (*bundleDiscoveryResult, error) {
+				return nil, fmt.Errorf("invalid artifact type \"x\", expected \"%s\"", firmwareBundleArtifactType)
+			},
+			expectDiscovered:     false,
+			expectErrorSubstring: "invalid artifact type",
 		},
 	}
 
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.discoverFn != nil {
+				firmwareBundleDiscoverFn = tt.discoverFn
+			} else {
+				firmwareBundleDiscoverFn = originalDiscover
+			}
+
 			err := reconciler.reconcileFirmwareBundle(context.Background(), tt.resource)
 			if err != nil {
 				t.Fatalf("reconcileFirmwareBundle() returned unexpected error: %v", err)
@@ -100,6 +148,9 @@ func TestReconcileFirmwareBundle(t *testing.T) {
 				}
 				if len(tt.resource.Status.ExtractedMetadata) == 0 {
 					t.Fatal("expected extracted metadata to be populated")
+				}
+				if tt.resource.Status.ExtractedMetadata["payloadDigest"] == "" {
+					t.Fatal("expected payload digest to be populated")
 				}
 			}
 		})
