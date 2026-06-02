@@ -2,7 +2,7 @@
 
 ## 1. Reconciliation Logic Summary
 
-`FirmwareUpdateJob` reconciliation is implemented in [firmware-manager/pkg/reconcilers/firmwareupdatejob_reconciler.go](firmware-manager/pkg/reconcilers/firmwareupdatejob_reconciler.go) with the following behavior:
+`FirmwareUpdateJob` reconciliation is implemented in [pkg/reconcilers/firmwareupdatejob_reconciler.go](pkg/reconcilers/firmwareupdatejob_reconciler.go) with the following behavior:
 
 - Idempotency guard:
   - Reconciliation exits immediately when `status.jobState` is `InProgress`, `Completed`, or `Failed`.
@@ -28,7 +28,7 @@
 
 ## 2. Proxy Endpoint Details
 
-Proxy implementation is in [firmware-manager/cmd/server/openapi_extensions.go](firmware-manager/cmd/server/openapi_extensions.go) and shared ORAS resolver utilities are in [firmware-manager/pkg/firmwareproxy/resolver.go](firmware-manager/pkg/firmwareproxy/resolver.go).
+Proxy implementation is in [cmd/server/openapi_extensions.go](cmd/server/openapi_extensions.go) and shared ORAS resolver utilities are in [pkg/firmwareproxy/resolver.go](pkg/firmwareproxy/resolver.go).
 
 - Route: `GET /firmware-proxy/layer/{digest}`
 - Behavior:
@@ -63,16 +63,15 @@ curl -sS -X POST http://127.0.0.1:8090/firmwareupdatejobs/ \
 
 ### 4.1 Scaffolded project location
 
-- Service code lives in [firmware-manager](firmware-manager).
+- Service code lives in the repository root.
 - The project was scaffolded with Fabrica (not hand-generated):
-  - `fabrica init firmware-manager --group hardware.fabrica.dev --storage-type ent --db sqlite --reconcile --events`
+  - `fabrica init firmware-updater --group hardware.fabrica.dev --storage-type ent --db sqlite --reconcile --events`
   - `fabrica add resource FirmwareUpdateJob`
   - `fabrica generate`
 
 ### 4.2 Build and run
 
 ```bash
-cd firmware-manager
 GOTOOLCHAIN=go1.26.3 go mod tidy
 GOTOOLCHAIN=go1.26.3 go build ./...
 GOTOOLCHAIN=go1.26.3 go run ./cmd/server serve --port 8090 --database-url="file:data.db?cache=shared&_fk=1"
@@ -138,8 +137,8 @@ This demonstrates:
 
 ## 6. Key Files Changed
 
-- [firmware-manager/apis/hardware.fabrica.dev/v1/firmwareupdatejob_types.go](firmware-manager/apis/hardware.fabrica.dev/v1/firmwareupdatejob_types.go)
-- [firmware-manager/pkg/firmwareproxy/resolver.go](firmware-manager/pkg/firmwareproxy/resolver.go)
-- [firmware-manager/cmd/server/openapi_extensions.go](firmware-manager/cmd/server/openapi_extensions.go)
-- [firmware-manager/cmd/server/main.go](firmware-manager/cmd/server/main.go)
-- [firmware-manager/pkg/reconcilers/firmwareupdatejob_reconciler.go](firmware-manager/pkg/reconcilers/firmwareupdatejob_reconciler.go)
+- [apis/hardware.fabrica.dev/v1/firmwareupdatejob_types.go](apis/hardware.fabrica.dev/v1/firmwareupdatejob_types.go)
+- [pkg/firmwareproxy/resolver.go](pkg/firmwareproxy/resolver.go)
+- [cmd/server/openapi_extensions.go](cmd/server/openapi_extensions.go)
+- [cmd/server/main.go](cmd/server/main.go)
+- [pkg/reconcilers/firmwareupdatejob_reconciler.go](pkg/reconcilers/firmwareupdatejob_reconciler.go)

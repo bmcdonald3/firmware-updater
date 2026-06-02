@@ -8,7 +8,7 @@
 **Fabrica Configuration (MANDATORY):**
 You must use the Fabrica framework to scaffold this service.
 
-* **Project Name:** firmware-manager
+* **Project Name:** firmware-updater
 * **API Group:** hardware.fabrica.dev
 * **Storage Type:** ent
 * **Database Driver:** sqlite
