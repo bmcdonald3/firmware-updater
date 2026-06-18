@@ -1,110 +1,148 @@
 # JIT Firmware Execution Service
 
-## 1. Architectural Overview
+## Overview
 
-The JIT (Just-In-Time) Firmware Execution Service is a stateless orchestration engine designed to deploy firmware binaries directly from OCI registries to hardware controllers (BMCs, Chassis Controllers, Cabinet Controllers) using the Redfish standard.
+The Firmware Execution Service is a stateless orchestration engine designed to deploy firmware binaries directly from OCI registries to hardware controllers (BMCs, Chassis Controllers, Cabinet Controllers) using the Redfish standard.
 
-Unlike traditional firmware management tools, this service maintains zero local inventory. It relies on a declarative, on-demand execution model driven by the `FirmwareUpdateJob` resource.
+The service maintains zero local inventory. It utilizes a declarative, on-demand execution model driven by the `FirmwareUpdateJob` resource. Upon receiving a job, the service dynamically queries the target hardware's Redfish `UpdateService` to discover its specific update URI. It then establishes a direct stream from the upstream OCI registry, utilizing `io.Copy` to flush the bytes directly into the hardware's response buffer without writing the payload to local disk.
 
-### The Execution Pipeline
+## Operating Modes
 
-1. **Request:** An HTTP POST is submitted with hardware credentials, the OCI image location, and the target component identifier.
-2. **Resolution:** The service connects to the OCI registry via ORAS, extracts the payload manifest, and retrieves the SHA-256 digest of the 58MB firmware binary.
-3. **Auto-Discovery:** The service queries the hardware's `UpdateService` to dynamically discover its specific `SimpleUpdate` action URI and parses the `FirmwareInventory` to map the human-readable component request (e.g., "BMC") to an explicit hardware URI.
-4. **Dispatch:** The service sends a Redfish POST to the hardware, instructing it to download the firmware from the Fabrica service's internal proxy route (`http://<serverProxyAddress>:8090/firmware-proxy/layer/<digest>`).
-5. **Streaming:** The hardware executes an HTTP GET against the proxy endpoint. The proxy initiates a data stream from the upstream OCI registry and utilizes `io.Copy` to flush the bytes directly into the hardware's response buffer without writing to local disk.
+The service supports two distinct operating methods for payload resolution:
 
-## 2. API Specification
+1. **Discovery Mode:** The service autonomously queries an OCI repository using the ORAS protocol. It downloads available manifests, filters them by matching a requested hardware model against OCI annotations, parses the version annotations, and automatically resolves the highest semantic version (e.g., when targeting `latest`).
+2. **Explicit Mode:** A manual override pathway where the user provides the exact OCI path and SHA digest, bypassing all annotation filtering and version resolution.
 
-### `FirmwareUpdateJob` Spec
+## Prerequisites
 
-* **`targetAddress`** (string): IP address or domain name of the destination hardware interface.
-* **`username`** (string): Administrative username for Redfish authentication.
-* **`password`** (string): Administrative password for Redfish authentication.
-* **`ociReference`** (string): Complete OCI path and tag/digest (e.g., `127.0.0.1:5000/firmware/cray-bmc:1.10.2`).
-* **`component`** (string, optional): Human-readable intent string (e.g., "BMC", "BIOS") used to auto-discover hardware targets dynamically.
-* **`targets`** (array of strings, optional): Explicit collection of target Redfish URIs. *Note: Either targets or component must be provided.*
-* **`serverProxyAddress`** (string): The IPv4 address of this Fabrica service instance from the perspective of the hardware management network.
+* **Go Toolchain:** Required to compile and run the Fabrica service.
+* **ORAS CLI:** Required by publishers to attach strict OCI annotations when uploading firmware binaries to the registry.
+* **Network Routing:** The `serverProxyAddress` property specified in the job payload must be an IPv4 address accurately routable from the isolated management VLAN hosting the physical hardware. If misconfigured, the target hardware will time out when attempting to pull the payload stream.
 
-## 3. Runbook: Cray EX Deployment
+## Publisher Workflow: Staging Firmware in the OCI Registry
 
-This workflow documents the deployment of a 58MB payload to a Cray Non-Compute Node (NCN) over the Hardware Management Network using Redfish Auto-Discovery.
+For Discovery Mode to function, the service must trust the metadata in the OCI registry. Publishers must push the firmware binary using ORAS and attach specific annotations to the manifest.
 
-### Step 1: Toolchain Initialization
+* `dev.fabrica.hardware.compatible`: A string or comma-separated list defining the hardware models the binary supports.
+* `org.opencontainers.image.version`: The strict Semantic Version of the payload.
 
-Required toolchains (Go and ORAS) are installed directly into the localized user directory to bypass HPC environment package managers.
+### Push Command
 
 ```bash
-mkdir -p /scratch/$USER/firmware-testing 
-cd /scratch/$USER/firmware-testing
-
-wget https://go.dev/dl/go1.22.4.linux-amd64.tar.gz 
-tar -C $HOME -xzf go1.22.4.linux-amd64.tar.gz 
-export PATH=$PATH:$HOME/go/bin
-
-curl -LO https://github.com/oras-project/oras/releases/download/v1.2.0/oras_1.2.0_linux_amd64.tar.gz
-mkdir -p $HOME/bin
-tar -zxf oras_1.2.0_linux_amd64.tar.gz -C $HOME/bin oras
-export PATH=$PATH:$HOME/bin
+oras push 127.0.0.1:5000/firmware/cray-bmc:1.10.2 --plain-http --artifact-type application/vnd.openchami.firmware.bundle.v1+json --annotation "dev.fabrica.hardware.compatible=x9000" --annotation "org.opencontainers.image.version=1.10.2" NC-1.10.2-22-s.tar.gz:application/vnd.openchami.firmware.payload.v1
 
 ```
 
-### Step 2: OCI Registry and Artifact Staging
+### Output
 
-The standard static file server is replaced with a local OCI distribution registry. The `oras push` command mathematically hashes the payload and stores it by its digest. The `127.0.0.1` address is used to force IPv4 routing.
-
-```bash
-podman run -d -p 5000:5000 --replace --name local-oci-registry registry:2
-
-curl -O http://rgw-vip.hmn:8080/fw-update/2d64752c1cad11f1aeaa62a6103f192d/NC-1.10.2-22-s.tar.gz
-
-oras push 127.0.0.1:5000/firmware/cray-bmc:1.10.2 \
-  --plain-http \
-  --artifact-type application/vnd.openchami.firmware.bundle.v1+json \
-  NC-1.10.2-22-s.tar.gz:application/vnd.openchami.firmware.payload.v1
+```text
+✓ Exists    NC-1.10.2-22-s.tar.gz                    56.1/56.1 MB 100.00%      └─ sha256:827a78b2484e60492c914b9567df487b6c5d647a13dceae13f93ecbf1cb44b14
+✓ Exists    application/vnd.oci.empty.v1+json              2/2  B 100.00%      └─ sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a
+✓ Uploaded  application/vnd.oci.image.manifest.v1+json 713/713  B 100.00%      └─ sha256:5a4a38b79a925da16f1f69707140a66ec462c40a3ed474b30ecd50f1f0cb4f05
+Pushed [registry] 127.0.0.1:5000/firmware/cray-bmc:1.10.2
+ArtifactType: application/vnd.openchami.firmware.bundle.v1+json
+Digest: sha256:5a4a38b79a925da16f1f69707140a66ec462c40a3ed474b30ecd50f1f0cb4f05
 
 ```
 
-### Step 3: Service Startup and Job Execution
+## End-User Workflow: Executing a Firmware Update Job
 
-The Fabrica service is started in the background. The job is submitted utilizing the `"component": "BMC"` parameter to trigger hardware auto-discovery.
+To initiate an update, the user submits a `FirmwareUpdateJob` resource. In Discovery Mode, the user specifies the hardware model (`x9000`), the repository path, and the target version (`latest`). The user does not need to know the SHA digest.
+
+### Submit Job Command
 
 ```bash
-go run ./cmd/server serve --port 8090 --database-url="file:hpc_test.db?cache=shared&_fk=1" &
-
-curl -sS -X POST http://127.0.0.1:8090/firmwareupdatejobs/ \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "metadata": {"name": "live-cray-auto-bmc"},
-    "spec": {
-      "targetAddress": "x9000c3s7b1",
-      "username": "root",
-      "password": "initial0",
-      "ociReference": "127.0.0.1:5000/firmware/cray-bmc:1.10.2",
-      "serverProxyAddress": "10.254.1.20",
-      "component": "BMC"
-    }
-  }'
+curl -sS -X POST http://127.0.0.1:8090/firmwareupdatejobs/ -H 'Content-Type: application/json' -d '{"metadata": {"name": "live-cray-discovery-bmc"}, "spec": {"targetAddress": "x9000c3s7b1", "username": "root", "password": "initial0", "serverProxyAddress": "10.254.1.20", "component": "BMC", "discovery": {"repository": "127.0.0.1:5000/firmware/cray-bmc", "hardwareModel": "x9000", "version": "latest"}}}'
 
 ```
 
-### Step 4: Hardware Validation
-
-Query the BMC to confirm it has accepted the proxy stream and transitioned to the `Updating` state.
-
-```bash
-curl -k -u root:initial0 https://x9000c3s7b1/redfish/v1/UpdateService/FirmwareInventory/BMC | jq
-
-```
-
-**Expected Output:**
+### Output
 
 ```json
-  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
-                                 Dload  Upload   Total   Spent    Left  Speed
-100   392  100   392    0     0    922      0 --:--:-- --:--:-- --:--:--   924
 {
-  "@odata.etag": "W/\"1781212049\"",
+  "apiVersion": "v1",
+  "kind": "FirmwareUpdateJob",
+  "metadata": {
+    "name": "live-cray-discovery-bmc",
+    "uid": "firmwareupdatejob-8eab5b0e",
+    "createdAt": "2026-06-17T22:32:39.066344171Z",
+    "updatedAt": "2026-06-17T22:32:39.066344171Z"
+  },
+  "spec": {
+    "targetAddress": "x9000c3s7b1",
+    "username": "root",
+    "password": "initial0",
+    "discovery": {
+      "repository": "127.0.0.1:5000/firmware/cray-bmc",
+      "hardwareModel": "x9000",
+      "version": "latest"
+    },
+    "component": "BMC",
+    "serverProxyAddress": "10.254.1.20"
+  },
+  "status": {}
+}
+
+```
+
+## Monitoring and Validation
+
+The update process operates asynchronously on background threads. The service writes the resolved version and digest into the status block of the job once discovery completes, providing a permanent record of what "latest" evaluated to at execution time.
+
+### Check Service Resolution Status
+
+```bash
+curl -k http://127.0.0.1:8090/firmwareupdatejobs/firmwareupdatejob-8eab5b0e
+
+```
+
+### Output
+
+```json
+{
+  "apiVersion": "v1",
+  "kind": "FirmwareUpdateJob",
+  "metadata": {
+    "name": "live-cray-discovery-bmc",
+    "uid": "firmwareupdatejob-8eab5b0e",
+    "createdAt": "2026-06-17T22:32:39.066344171Z",
+    "updatedAt": "2026-06-17T22:32:42.01724319Z"
+  },
+  "spec": {
+    "targetAddress": "x9000c3s7b1",
+    "username": "root",
+    "password": "initial0",
+    "discovery": {
+      "repository": "127.0.0.1:5000/firmware/cray-bmc",
+      "hardwareModel": "x9000",
+      "version": "latest"
+    },
+    "component": "BMC",
+    "serverProxyAddress": "10.254.1.20"
+  },
+  "status": {
+    "jobState": "InProgress",
+    "resolvedVersion": "1.10.2",
+    "resolvedDigest": "sha256:827a78b2484e60492c914b9567df487b6c5d647a13dceae13f93ecbf1cb44b14"
+  }
+}
+
+```
+
+### Verify Hardware State
+
+Query the hardware directly via Redfish to verify it has successfully accepted the payload stream from the service.
+
+```bash
+curl -sk -u root:initial0 https://x9000c3s7b1/redfish/v1/UpdateService/FirmwareInventory/BMC
+
+```
+
+### Output
+
+```json
+{
+  "@odata.etag": "W/\"1781735903\"",
   "@odata.id": "/redfish/v1/UpdateService/FirmwareInventory/BMC",
   "@odata.type": "#SoftwareInventory.v1_1_0.SoftwareInventory",
   "Description": "Baseboard Management Controller",
@@ -113,16 +151,10 @@ curl -k -u root:initial0 https://x9000c3s7b1/redfish/v1/UpdateService/FirmwareIn
   "SoftwareId": "nc:*:*:*",
   "Status": {
     "Health": "OK",
-    "State": "Updating"
+    "State": "Enabled"
   },
   "Updateable": true,
   "Version": "nc.1.10.2-22-shasta-release.arm.2026-01-15T01:13:10+00:00.a0bcef9"
 }
 
 ```
-
-## 4. Engineering and Network Constraints
-
-* **Asynchronous API Contracts:** The API returns an immediate `201 Created` code when a job is posted. Actual auto-discovery, resolution, and dispatch occur on background processing threads. Status is evaluated by polling the job resource.
-* **TLS Policy Constraints:** Outbound communication to target hardware addresses defaults to HTTPS using insecure validation configurations (`InsecureSkipVerify: true`). This accommodation allows connection to self-signed TLS certificates generated by bare-metal controllers.
-* **Proxy Address Accuracy:** The `serverProxyAddress` property must be accurately routable from the isolated management VLAN hosting the physical hardware. If this address is misconfigured, the target hardware will time out during the HTTP GET payload pull phase.
