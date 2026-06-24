@@ -61,7 +61,7 @@ Required parameters when pushing for Discovery Mode:
 Push command example:
 
 ```bash
-oras push 127.0.0.1:5000/firmware/cray-bmc:1.10.2 \
+oras push quay.io/my-org/firmware/cray-bmc:1.10.2 \
   --artifact-type application/vnd.openchami.firmware.bundle.v1+json \
   --annotation "dev.fabrica.hardware.compatible=x9000" \
   --annotation "org.opencontainers.image.version=1.10.2" \
