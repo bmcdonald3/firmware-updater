@@ -3,49 +3,87 @@ name: Release
 on:
   push:
     tags:
-      - 'v*.*.*'
-
-permissions:
-  contents: write
-  packages: write
+      - 'v*'
 
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          fetch-tags: 1
           fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: stable
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4.0.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/setup-buildx-action@v4.0.0
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          driver-opts: |
+            image=moby/buildkit:master
+            network=host
 
       - name: Install cross-compilers for CGO builds
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
 
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v6
+      - name: Docker Login
+        uses: docker/login-action@v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set build environment variables
+        run: |
+          echo "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_ENV
+          echo "BUILD_HOST=$(hostname)" >> $GITHUB_ENV
+          echo "GO_VERSION=$(go version | awk '{print $3}')" >> $GITHUB_ENV
+          echo "BUILD_USER=$(whoami)" >> $GITHUB_ENV
+          echo "CGO_ENABLED=1" >> $GITHUB_ENV
+          echo "IS_PR_BUILD=false" >> $GITHUB_ENV
+
+      - name: Release with goreleaser
+        uses: goreleaser/goreleaser-action@v7.2.2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         with:
           distribution: goreleaser
-          version: '~> v2'
+          version: latest
           args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Process GoReleaser output
+        id: process_goreleaser_output
+        run: |
+          cat << 'EOF' > process.js
+          const fs = require('fs');
+          const artifacts = JSON.parse(fs.readFileSync('dist/artifacts.json', 'utf8'));
+          const manifests = artifacts.filter(a => a.type === 'Docker Manifest');
+          const digest = manifests[0].extra.Digest;
+          fs.writeFileSync('digest.txt', digest);
+          EOF
+          node process.js
+          echo "digest=$(cat digest.txt)" >> $GITHUB_OUTPUT
+
+      - name: Attest Binaries
+        uses: actions/attest-build-provenance@v4.1.0
+        with:
+          subject-path: dist/**/firmware-updater*
+
+      - name: generate build provenance
+        uses: actions/attest-build-provenance@v4.1.0
+        with:
+          subject-name: ghcr.io/openchami/firmware-updater
+          subject-digest: ${{ steps.process_goreleaser_output.outputs.digest }}
