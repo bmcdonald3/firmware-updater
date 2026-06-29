@@ -7,7 +7,7 @@ before:
 builds:
   - id: firmware-updater-server-linux-amd64
     main: ./cmd/server
-    binary: firmware-updater-server
+    binary: firmware-updater
     env:
       - CGO_ENABLED=1
       - CC=gcc
@@ -25,7 +25,7 @@ builds:
 
   - id: firmware-updater-server-linux-arm64
     main: ./cmd/server
-    binary: firmware-updater-server
+    binary: firmware-updater
     env:
       - CGO_ENABLED=1
       - CC=aarch64-linux-gnu-gcc
