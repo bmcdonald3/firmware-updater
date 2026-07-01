@@ -31,8 +31,7 @@ type FirmwareUpdateJob struct {
 // FirmwareUpdateJobSpec defines the desired state of FirmwareUpdateJob
 type FirmwareUpdateJobSpec struct {
 	TargetAddress      string         `json:"targetAddress" validate:"required"`
-	Username           string         `json:"username" validate:"required"`
-	Password           string         `json:"password" validate:"required"`
+	SecretID           string         `json:"secretID" validate:"required"`
 	OCIReference       *string        `json:"ociReference,omitempty"`
 	Discovery          *DiscoverySpec `json:"discovery,omitempty"`
 	Targets            []string       `json:"targets,omitempty" validate:"dive,required"`

@@ -18,8 +18,14 @@ import (
 	"time"
 
 	v1 "github.com/user/firmware-updater/apis/hardware.fabrica.dev/v1"
+	"github.com/user/firmware-updater/internal/secretsruntime"
 	"github.com/user/firmware-updater/pkg/firmwareproxy"
 )
+
+type bmcCredentials struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
 
 // reconcileFirmwareUpdateJob contains custom reconciliation logic.
 //
@@ -118,10 +124,29 @@ func (r *FirmwareUpdateJobReconciler) reconcileFirmwareUpdateJob(ctx context.Con
 	res.Status.ResolvedVersion = resolvedVersion
 	r.Logger.Debugf("FirmwareUpdateJob %s resolved payload digest %q from %q", res.GetUID(), payloadDigest, resolvedRef)
 
+	creds, err := loadBMCCredentials(res.Spec.SecretID)
+	if err != nil {
+		if isTerminalError(err) {
+			res.Status.JobState = "Failed"
+			res.Status.ErrorDetail = err.Error()
+			if updateErr := r.UpdateStatus(ctx, res); updateErr != nil {
+				return fmt.Errorf("set terminal failure after credential load error: %w", updateErr)
+			}
+			return nil
+		}
+
+		res.Status.ErrorDetail = err.Error()
+		res.Status.JobState = "Failed"
+		if updateErr := r.UpdateStatus(ctx, res); updateErr != nil {
+			return fmt.Errorf("persist credential load error as failed: %w", updateErr)
+		}
+		return nil
+	}
+
 	proxyURI := fmt.Sprintf("http://%s/firmware-proxy/layer/%s", net.JoinHostPort(res.Spec.ServerProxyAddress, "8090"), payloadDigest)
 
 	// Discover the UpdateService action URI
-	actionURI, err := discoverUpdateServiceActionWithBackoff(ctx, res.Spec.TargetAddress, res.Spec.Username, res.Spec.Password)
+	actionURI, err := discoverUpdateServiceActionWithBackoff(ctx, res.Spec.TargetAddress, creds.Username, creds.Password)
 	if err != nil {
 		if isTerminalError(err) {
 			res.Status.JobState = "Failed"
@@ -144,7 +169,7 @@ func (r *FirmwareUpdateJobReconciler) reconcileFirmwareUpdateJob(ctx context.Con
 
 	// If Component is specified and Targets is empty, discover targets from FirmwareInventory
 	if res.Spec.Component != "" && len(res.Spec.Targets) == 0 {
-		targets, err := discoverTargetsFromInventoryWithBackoff(ctx, res.Spec.TargetAddress, res.Spec.Username, res.Spec.Password, res.Spec.Component)
+		targets, err := discoverTargetsFromInventoryWithBackoff(ctx, res.Spec.TargetAddress, creds.Username, creds.Password, res.Spec.Component)
 		if err != nil {
 			if isTerminalError(err) {
 				res.Status.JobState = "Failed"
@@ -167,7 +192,7 @@ func (r *FirmwareUpdateJobReconciler) reconcileFirmwareUpdateJob(ctx context.Con
 		r.Logger.Debugf("FirmwareUpdateJob %s discovered targets for component %q: %v", res.GetUID(), res.Spec.Component, targets)
 	}
 
-	taskID, err := dispatchRedfishWithBackoff(ctx, res, proxyURI, actionURI)
+	taskID, err := dispatchRedfishWithBackoff(ctx, res, creds, proxyURI, actionURI)
 	if err != nil {
 		if isTerminalError(err) {
 			res.Status.JobState = "Failed"
@@ -289,12 +314,12 @@ func discoverTargetsFromInventoryWithBackoff(ctx context.Context, targetAddress,
 	return nil, lastErr
 }
 
-func dispatchRedfishWithBackoff(ctx context.Context, res *v1.FirmwareUpdateJob, proxyURI, actionURI string) (string, error) {
+func dispatchRedfishWithBackoff(ctx context.Context, res *v1.FirmwareUpdateJob, creds bmcCredentials, proxyURI, actionURI string) (string, error) {
 	var lastErr error
 	backoff := time.Second
 
 	for attempt := 1; attempt <= 4; attempt++ {
-		taskID, err := dispatchRedfishOnce(ctx, res, proxyURI, actionURI)
+		taskID, err := dispatchRedfishOnce(ctx, res, creds, proxyURI, actionURI)
 		if err == nil {
 			return taskID, nil
 		}
@@ -313,7 +338,7 @@ func dispatchRedfishWithBackoff(ctx context.Context, res *v1.FirmwareUpdateJob, 
 	return "", lastErr
 }
 
-func dispatchRedfishOnce(ctx context.Context, res *v1.FirmwareUpdateJob, proxyURI, actionURI string) (string, error) {
+func dispatchRedfishOnce(ctx context.Context, res *v1.FirmwareUpdateJob, creds bmcCredentials, proxyURI, actionURI string) (string, error) {
 	payload := map[string]interface{}{
 		"ImageURI":         proxyURI,
 		"Targets":          res.Spec.Targets,
@@ -334,7 +359,7 @@ func dispatchRedfishOnce(ctx context.Context, res *v1.FirmwareUpdateJob, proxyUR
 	if err != nil {
 		return "", fmt.Errorf("build Redfish SimpleUpdate request: %w", err)
 	}
-	req.SetBasicAuth(res.Spec.Username, res.Spec.Password)
+	req.SetBasicAuth(creds.Username, creds.Password)
 	req.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{
@@ -576,4 +601,34 @@ func discoverTargetsFromInventory(ctx context.Context, targetAddress, username, 
 	}
 
 	return targets, nil
+}
+
+func loadBMCCredentials(secretID string) (bmcCredentials, error) {
+	secretID = strings.TrimSpace(secretID)
+	if secretID == "" {
+		return bmcCredentials{}, &firmwareproxy.HTTPStatusError{StatusCode: 400, Message: "spec.secretID is required"}
+	}
+
+	store := secretsruntime.GetStore()
+	if store == nil {
+		return bmcCredentials{}, fmt.Errorf("secret store is not initialized")
+	}
+
+	raw, err := store.GetSecretByID(secretID)
+	if err != nil {
+		return bmcCredentials{}, &firmwareproxy.HTTPStatusError{StatusCode: 400, Message: fmt.Sprintf("load credentials for secretID %q: %v", secretID, err)}
+	}
+
+	var creds bmcCredentials
+	if err := json.Unmarshal([]byte(raw), &creds); err != nil {
+		return bmcCredentials{}, &firmwareproxy.HTTPStatusError{StatusCode: 400, Message: fmt.Sprintf("decode credentials for secretID %q: %v", secretID, err)}
+	}
+
+	creds.Username = strings.TrimSpace(creds.Username)
+	creds.Password = strings.TrimSpace(creds.Password)
+	if creds.Username == "" || creds.Password == "" {
+		return bmcCredentials{}, &firmwareproxy.HTTPStatusError{StatusCode: 400, Message: fmt.Sprintf("secretID %q must contain non-empty username and password", secretID)}
+	}
+
+	return creds, nil
 }
