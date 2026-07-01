@@ -28,8 +28,7 @@ metadata:
   name: update-switch-01
 spec:
   targetAddress: "192.168.1.100"
-  username: "admin"
-  password: "password"
+  secretID: "switch-01-bmc"
   serverProxyAddress: "proxy.local"
   discovery:
     repository: "registry.local/firmware"

@@ -10,6 +10,8 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -19,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/OpenCHAMI/magellan/pkg/secrets"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/openchami/fabrica/pkg/versioning"
@@ -26,6 +29,7 @@ import (
 	"github.com/spf13/viper"
 	_ "github.com/user/firmware-updater/pkg/apiversion"
 
+	"github.com/user/firmware-updater/internal/secretsruntime"
 	"github.com/user/firmware-updater/internal/storage"
 
 	"github.com/user/firmware-updater/internal/storage/ent"
@@ -65,6 +69,9 @@ type Config struct {
 	// Registry authentication (optional)
 	QuayUsername string `mapstructure:"quay_username"`
 	QuayPassword string `mapstructure:"quay_password"`
+
+	// Secret store configuration
+	SecretsFile string `mapstructure:"secrets-file"`
 }
 
 // DefaultConfig returns the default configuration
@@ -85,6 +92,7 @@ func DefaultConfig() *Config {
 
 		QuayUsername: "",
 		QuayPassword: "",
+		SecretsFile:  "secrets.json",
 	}
 }
 
@@ -128,6 +136,7 @@ func init() {
 	serveCmd.Flags().Int("idle-timeout", 60, "Idle timeout in seconds")
 
 	serveCmd.Flags().String("database-url", "", "Database connection URL")
+	serveCmd.Flags().String("secrets-file", "secrets.json", "Path to encrypted secrets store JSON file")
 
 	// Bind flags to viper
 	viper.BindPFlags(serveCmd.Flags())
@@ -167,6 +176,7 @@ func initConfig() {
 	viper.AutomaticEnv()
 	viper.BindEnv("quay_username")
 	viper.BindEnv("quay_password")
+	viper.BindEnv("secrets-file")
 
 	// Read config file if it exists
 	if err := viper.ReadInConfig(); err == nil {
@@ -188,6 +198,10 @@ func initConfig() {
 func runServer(cmd *cobra.Command, args []string) error {
 	log.Printf("Starting firmware-updater server...")
 	firmwareproxy.InitAuth(config.QuayUsername, config.QuayPassword)
+
+	if err := initializeSecretStore(config.SecretsFile); err != nil {
+		return err
+	}
 
 	// Initialize storage backend
 
@@ -349,6 +363,95 @@ func runServer(cmd *cobra.Command, args []string) error {
 	}
 
 	log.Println("Server exited")
+	return nil
+}
+
+func initializeSecretStore(secretFile string) error {
+	if err := validateMasterKey(); err != nil {
+		return err
+	}
+
+	if strings.TrimSpace(secretFile) == "" {
+		return fmt.Errorf("secrets store file path is required")
+	}
+
+	if _, err := os.Stat(secretFile); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("secrets store file %q does not exist", secretFile)
+		}
+		return fmt.Errorf("stat secrets store file %q: %w", secretFile, err)
+	}
+
+	store, err := openSecretStore(secretFile)
+	if err != nil {
+		return fmt.Errorf("open secret store %q: %w", secretFile, err)
+	}
+
+	if err := secretsruntime.SetStore(store); err != nil {
+		return fmt.Errorf("initialize secret store runtime state: %w", err)
+	}
+
+	log.Printf("Loaded encrypted secrets store from %s", secretFile)
+	return nil
+}
+
+func openSecretStore(secretFile string) (secrets.SecretStore, error) {
+	store, err := secrets.OpenStore(secretFile)
+	if err == nil {
+		return store, nil
+	}
+
+	if !strings.Contains(strings.ToLower(err.Error()), "file already closed") {
+		return nil, err
+	}
+
+	masterKey := strings.TrimSpace(os.Getenv("MASTER_KEY"))
+	tmpFile, tmpErr := os.CreateTemp("", "firmware-updater-secrets-runtime-*.json")
+	if tmpErr != nil {
+		return nil, fmt.Errorf("create runtime secret-store temp file: %w", tmpErr)
+	}
+	tmpPath := tmpFile.Name()
+	if closeErr := tmpFile.Close(); closeErr != nil {
+		return nil, fmt.Errorf("close runtime secret-store temp file: %w", closeErr)
+	}
+	if removeErr := os.Remove(tmpPath); removeErr != nil {
+		return nil, fmt.Errorf("prepare runtime secret-store temp path: %w", removeErr)
+	}
+	defer os.Remove(tmpPath)
+
+	localStore, localErr := secrets.NewLocalSecretStore(masterKey, tmpPath, true)
+	if localErr != nil {
+		return nil, fmt.Errorf("create fallback local secret store: %w", localErr)
+	}
+
+	encoded, readErr := os.ReadFile(secretFile)
+	if readErr != nil {
+		return nil, fmt.Errorf("read encrypted secrets file: %w", readErr)
+	}
+
+	secretMap := make(map[string]string)
+	if unmarshalErr := json.Unmarshal(encoded, &secretMap); unmarshalErr != nil {
+		return nil, fmt.Errorf("decode encrypted secrets JSON: %w", unmarshalErr)
+	}
+
+	localStore.Secrets = secretMap
+	return localStore, nil
+}
+
+func validateMasterKey() error {
+	masterKey := strings.TrimSpace(os.Getenv("MASTER_KEY"))
+	if len(masterKey) != 64 {
+		return fmt.Errorf("MASTER_KEY must be a 64-character hex string")
+	}
+
+	decoded, err := hex.DecodeString(masterKey)
+	if err != nil {
+		return fmt.Errorf("MASTER_KEY must be valid hex: %w", err)
+	}
+	if len(decoded) != 32 {
+		return fmt.Errorf("MASTER_KEY must decode to 32 bytes for AES-256")
+	}
+
 	return nil
 }
 

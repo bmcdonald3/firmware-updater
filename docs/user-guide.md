@@ -103,8 +103,7 @@ curl -sS -X POST http://127.0.0.1:8090/firmwareupdatejobs/ \
     },
     "spec": {
       "targetAddress": "10.10.10.50",
-      "username": "root",
-      "password": "bmc-password",
+      "secretID": "x9000-bmc",
       "serverProxyAddress": "10.254.1.20",
       "component": "BMC",
       "discovery": {
@@ -130,8 +129,7 @@ curl -sS -X POST http://127.0.0.1:8090/firmwareupdatejobs/ \
     },
     "spec": {
       "targetAddress": "10.10.10.50",
-      "username": "root",
-      "password": "bmc-password",
+      "secretID": "x9000-bmc",
       "serverProxyAddress": "10.254.1.20",
       "ociReference": "quay.io/my-org/firmware/node-bios:v2.1",
       "component": "BIOS"
